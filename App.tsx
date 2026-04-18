@@ -23,23 +23,27 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const checkApiKey = async () => {
-      if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
-        const hasKey = await window.aistudio.hasSelectedApiKey();
-        setApiKeySelected(hasKey);
-        // Only show prompt automatically if they switch to Pro and don't have a key
-        if (tier === 'Pro' && !hasKey) {
-          setShowApiKeyPrompt(true);
+      // Only check API key for Pro tier
+      if (tier === 'Pro') {
+        if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
+          try {
+            const hasKey = await window.aistudio.hasSelectedApiKey();
+            setApiKeySelected(hasKey);
+            setShowApiKeyPrompt(!hasKey);
+          } catch (err) {
+            console.warn('Could not check API key status:', err);
+            setApiKeySelected(false);
+            setShowApiKeyPrompt(true);
+          }
         } else {
-          setShowApiKeyPrompt(false);
+          // aistudio not available - user needs to select key
+          setApiKeySelected(false);
+          setShowApiKeyPrompt(true);
         }
       } else {
-        const hasEnvKey = !!process.env.API_KEY;
-        setApiKeySelected(hasEnvKey);
-        if (tier === 'Pro' && !hasEnvKey) {
-          setShowApiKeyPrompt(true);
-        } else {
-          setShowApiKeyPrompt(false);
-        }
+        // Standard tier (FREE) doesn't need API key - backend has it protected
+        setApiKeySelected(true);
+        setShowApiKeyPrompt(false);
       }
     };
     checkApiKey();
@@ -65,7 +69,7 @@ const App: React.FC = () => {
     const file = event.target.files?.[0];
     if (file) {
       resetState();
-      
+
       if (file.size > MAX_FILE_SIZE_BYTES) {
         setError(`File size exceeds the limit of ${MAX_FILE_SIZE_MB}MB.`);
         const fileInput = document.getElementById('file-upload') as HTMLInputElement;
@@ -85,30 +89,32 @@ const App: React.FC = () => {
   };
 
   const handleUpscale = useCallback(async () => {
+    // Validate image selection
+    if (!originalImage) {
+      setError('Please select an image first.');
+      return;
+    }
+
+    const base64Data = originalImage.split(',')[1];
+    if (!base64Data || !originalImageFile) {
+      setError('Invalid image format.');
+      return;
+    }
+
+    // For PRO tier, verify API key is selected
     if (tier === 'Pro') {
       if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
         const hasKey = await window.aistudio.hasSelectedApiKey();
         if (!hasKey) {
           setShowApiKeyPrompt(true);
-          setError("A paid API key is required for Pro mode.");
+          setError("Please select a paid API key first.");
           return;
         }
-      } else if (!process.env.API_KEY) {
+      } else {
         setShowApiKeyPrompt(true);
-        setError("API key not detected. Pro mode requires a valid key.");
+        setError("API key selection not available. Pro mode requires aistudio.");
         return;
       }
-    }
-
-    if (!originalImage) {
-      setError('Please select an image first.');
-      return;
-    }
-    
-    const base64Data = originalImage.split(',')[1];
-    if (!base64Data || !originalImageFile) {
-        setError('Invalid image format.');
-        return;
     }
 
     setIsLoading(true);
@@ -144,7 +150,7 @@ const App: React.FC = () => {
 
       const closestAspectRatio = await calculateAspectRatio(originalImage);
       const { data, mimeType } = await upscaleImage(base64Data, originalImageFile.type, enhanceFaces, outputQuality, tier, closestAspectRatio);
-      
+
       // Convert result to High Quality JPG with Premium Post-Processing
       const convertToJpg = (base64Str: string, mime: string): Promise<string> => {
         return new Promise((resolve) => {
@@ -169,7 +175,7 @@ const App: React.FC = () => {
                     const w = canvas.width;
                     const h = canvas.height;
                     const amount = 0.55; // 55% sharpness injection to prevent deep artifacting
-                    
+
                     // 3x3 Convolution Matrix [0, -1, 0, -1, 5, -1, 0, -1, 0]
                     for (let y = 1; y < h - 1; y++) {
                         for (let x = 1; x < w - 1; x++) {
@@ -197,7 +203,7 @@ const App: React.FC = () => {
           img.src = `data:${mime};base64,${base64Str}`;
         });
       };
-      
+
       const jpgDataUrl = await convertToJpg(data, mimeType);
       setUpscaledImage(jpgDataUrl);
     } catch (err: any) {
@@ -210,7 +216,7 @@ const App: React.FC = () => {
       setIsLoading(false);
     }
   }, [originalImage, originalImageFile, enhanceFaces, outputQuality, tier]);
-  
+
   const resetState = () => {
       setOriginalImage(null);
       setOriginalImageFile(null);
@@ -218,7 +224,7 @@ const App: React.FC = () => {
       setError(null);
       setIsLoading(false);
   };
-  
+
   const handleReset = () => {
       resetState();
       const fileInput = document.getElementById('file-upload') as HTMLInputElement;
@@ -242,8 +248,8 @@ const App: React.FC = () => {
           <button
             onClick={() => setTier('Standard')}
             className={`px-6 py-2 rounded-lg font-bold transition-all duration-300 ${
-              tier === 'Standard' 
-              ? 'bg-cyan-600 text-white shadow-lg' 
+              tier === 'Standard'
+              ? 'bg-cyan-600 text-white shadow-lg'
               : 'text-gray-400 hover:text-gray-200'
             }`}
           >
@@ -252,8 +258,8 @@ const App: React.FC = () => {
           <button
             onClick={() => setTier('Pro')}
             className={`px-6 py-2 rounded-lg font-bold flex items-center gap-2 transition-all duration-300 ${
-              tier === 'Pro' 
-              ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg' 
+              tier === 'Pro'
+              ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg'
               : 'text-gray-400 hover:text-gray-200'
             }`}
           >
@@ -327,19 +333,19 @@ const App: React.FC = () => {
                                   <p className="text-sm text-red-100/80 leading-relaxed mb-6">
                                     {error}
                                   </p>
-                                  
+
                                   <div className="flex flex-col gap-3">
                                     {(error.toLowerCase().includes("api key") || error.toLowerCase().includes("billing")) && (
-                                      <button 
+                                      <button
                                         onClick={handleSelectApiKey}
                                         className="w-full py-3 bg-white text-gray-900 font-bold rounded-xl hover:bg-gray-200 transition-colors"
                                       >
                                         Configure API Key
                                       </button>
                                     )}
-                                    
-                                    <button 
-                                      onClick={() => setError(null)} 
+
+                                    <button
+                                      onClick={() => setError(null)}
                                       className="w-full py-3 bg-red-600/20 text-red-200 font-semibold rounded-xl border border-red-500/30 hover:bg-red-600/30 transition-colors"
                                     >
                                       Dismiss
@@ -350,7 +356,7 @@ const App: React.FC = () => {
                         )}
                     </div>
                 </div>
-                
+
               <div className="flex flex-col items-center justify-center gap-6 w-full max-w-2xl bg-gray-900/30 p-6 rounded-xl border border-gray-700/30">
                 <div className="flex flex-col sm:flex-row items-center gap-8">
                     <div className="flex items-center gap-3">
@@ -385,21 +391,21 @@ const App: React.FC = () => {
                         </select>
                     </div>
                 </div>
-                
+
                 <div className="flex flex-wrap items-center justify-center gap-4">
                     <button
                         onClick={handleUpscale}
                         disabled={isLoading || !originalImage}
                         className={`group flex items-center gap-3 px-10 py-4 text-white font-bold text-lg rounded-xl shadow-xl transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed transform hover:scale-105 active:scale-95 ${
-                          tier === 'Pro' 
-                          ? 'bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500' 
+                          tier === 'Pro'
+                          ? 'bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500'
                           : 'bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500'
                         }`}
                     >
                         <SparklesIcon className={`w-6 h-6 group-hover:rotate-12 transition-transform ${tier === 'Pro' ? 'text-yellow-300' : 'text-cyan-200'}`} />
                         {isLoading ? 'Processing...' : `Upscale with Gemini ${tier}`}
                     </button>
-                    
+
                     {upscaledImage && (
                         <a
                         href={upscaledImage}
@@ -422,7 +428,7 @@ const App: React.FC = () => {
           )}
         </div>
       </main>
-      
+
       <footer className="w-full max-w-6xl mt-12 py-8 border-t border-gray-800 text-center">
         <div className="flex flex-col items-center gap-2">
           {upscaledImage && (
