@@ -1,8 +1,20 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI } from '@google/genai';
 
-const API_CALL_TIMEOUT_MS = 60000; // 60 seconds (1 minute)
-// Use relative URL - vite proxy will handle the routing to localhost:3001
+const API_CALL_TIMEOUT_MS = 60000;
 const BACKEND_URL = '/api';
+
+// ============================================================
+// MODELOS CONFIRMADOS — ai.google.dev/gemini-api/docs/models
+// Documentação oficial atualizada em fevereiro 2026
+//
+// FREE  → gemini-2.5-flash-image        (estável, geração nativa)
+// PRO   → gemini-3-pro-image-preview    (preview pago, qualidade estúdio)
+//
+// PROBLEMA ORIGINAL: o app usava o mesmo modelo em ambos os tiers,
+// o usuário pagava pela chave PRO mas recebia resultado do FREE.
+// ============================================================
+const IMAGE_MODEL_FREE = 'gemini-2.5-flash-image';
+const IMAGE_MODEL_PRO  = 'gemini-3-pro-image-preview';
 
 export type UpscaleTier = 'Standard' | 'Pro';
 
@@ -11,29 +23,21 @@ export interface UpscaleResponse {
   mimeType: string;
 }
 
-// FREE TIER: Call backend (protected API key)
+// FREE TIER: chama o backend Express (API key protegida no servidor)
 export const upscaleImageByBackend = async (
   base64ImageData: string,
   mimeType: string,
   enhanceFaces: boolean,
   quality: 'Standard' | 'High' | 'Professional',
-  aspectRatio: string = "1:1"
+  aspectRatio: string = '1:1',
 ): Promise<UpscaleResponse> => {
   try {
-    console.log('📤 Calling backend upscale (FREE tier)...');
+    console.log(`📤 FREE tier → backend (${IMAGE_MODEL_FREE})`);
 
     const response = await fetch(`${BACKEND_URL}/upscale`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        base64ImageData,
-        mimeType,
-        enhanceFaces,
-        quality,
-        aspectRatio,
-      }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base64ImageData, mimeType, enhanceFaces, quality, aspectRatio }),
       signal: AbortSignal.timeout(API_CALL_TIMEOUT_MS),
     });
 
@@ -42,155 +46,156 @@ export const upscaleImageByBackend = async (
       throw new Error(error.error || `Backend error: ${response.statusText}`);
     }
 
-    const data = await response.json() as UpscaleResponse;
-    console.log('✅ Backend upscale completed');
+    const data = (await response.json()) as UpscaleResponse;
+    console.log('✅ FREE upscale completed');
     return data;
+
   } catch (error: any) {
-    console.error('❌ Backend upscale error:', error);
-    const errorMessage = error.message || 'Unknown error';
+    // Bug #6 FIX: guard obrigatório — error.message pode ser undefined
+    const msg: string = error?.message || 'Unknown error';
+    console.error('❌ Backend upscale error:', msg);
 
-    if (errorMessage.includes('timeout') || errorMessage.includes('Abort')) {
-      throw new Error('The upscale process timed out after 60 seconds. Try a smaller image or lower quality.');
+    if (msg.includes('timeout') || msg.includes('Abort')) {
+      throw new Error('Upscale timed out after 60s. Try a smaller image or lower quality.');
     }
-
-    if (errorMessage.includes('Connection refused')) {
-      throw new Error('Backend server is not running. Please ensure the server is started with: npm run server');
+    if (msg.includes('Connection refused') || msg.includes('Failed to fetch')) {
+      throw new Error('Backend not running. Start with: npm run server');
     }
-
-    throw new Error(errorMessage || 'Failed to upscale image via backend');
+    throw new Error(msg);
   }
 };
 
-// PRO TIER: Direct API call (user's API key)
+// PRO TIER: chama a API Gemini diretamente com a chave do usuário
 export const upscaleImage = async (
   base64ImageData: string,
   mimeType: string,
   enhanceFaces: boolean,
   quality: 'Standard' | 'High' | 'Professional',
   tier: UpscaleTier,
-  aspectRatio: string = "1:1"
+  aspectRatio: string = '1:1',
 ): Promise<UpscaleResponse> => {
+  // Redireciona Standard para o backend FREE
+  if (tier === 'Standard') {
+    return upscaleImageByBackend(base64ImageData, mimeType, enhanceFaces, quality, aspectRatio);
+  }
+
+  // ============================================================
+  // PRO TIER — modelo correto: gemini-3-pro-image-preview
+  // Diferença real vs FREE:
+  //   - Raciocínio multimodal avançado (Thinking: Compatível)
+  //   - Google Search grounding (Pesquisar conteúdo: Compatível)
+  //   - Qualidade de estúdio, layouts complexos, texto preciso
+  //   - Limite: apenas Preview (sem versão estável ainda)
+  // ============================================================
   try {
-    // If Standard tier, use backend
-    if (tier === 'Standard') {
-      return await upscaleImageByBackend(base64ImageData, mimeType, enhanceFaces, quality, aspectRatio);
-    }
+    console.log(`📤 PRO tier → API direta (${IMAGE_MODEL_PRO})`);
 
-    // PRO tier: use user's API key from aistudio
-    // The API key must be selected via window.aistudio.openSelectKey() before this is called
-    // The GoogleGenAI SDK will use the selected key automatically from aistudio
-    console.log('📤 Calling Gemini API directly (PRO tier)...');
-    // Initialize GoogleGenAI without explicit key - it will use the one from aistudio context
     const ai = new GoogleGenAI({
-      apiKey: undefined as any, // Will use aistudio's selected key
+      apiKey: undefined as any, // injetado pelo contexto window.aistudio
     });
-    const modelName = 'gemini-2.5-flash-image';
 
-    const RestorationPrompt = quality === 'Professional'
-      ? `You are an elite Super-Resolution AI operating at a Premium Master level (like a high-end photography studio algorithm).
+    const RestorationPrompt =
+      quality === 'Professional'
+        ? `You are an elite Super-Resolution AI operating at a Premium Master level.
 Your task is to INTELLIGENTLY RECONSTRUCT AND ADD photorealistic micro-details to upscale this image by 2x.
 
 MANDATORY RULES:
-1. MACRO-TEXTURE INJECTION: Do not leave surfaces smooth. Dynamically add hyper-realistic micro-textures corresponding to the material. If it's denim, render the exact fabric weaves and threads. If it's leather or skin, render microscopic pores.
-2. RAW SHARPNESS: Eliminate AI "smoothing" completely. Provide a RAW, high-frequency Hasselblad photograph aesthetic with immense micro-contrast.
-3. CONTEXTUAL FAITHFULNESS: While inventing high-resolution textures, you MUST preserve the exact structure, color hue, text/logo shapes, and overall lighting of the original image.`
-      : `You are a dedicated Super-Resolution AI. Your task is to upscale the provided image by 2x while aggressively MAXIMIZING SHARPNESS and micro-details.
+1. MACRO-TEXTURE INJECTION: Dynamically add hyper-realistic micro-textures. If it's denim, render exact fabric weaves. If it's skin, render microscopic pores.
+2. RAW SHARPNESS: Eliminate AI smoothing. Deliver a RAW Hasselblad-aesthetic output with immense micro-contrast.
+3. CONTEXTUAL FAITHFULNESS: Preserve exact structure, color hue, text/logo shapes, and lighting of the original.`
+        : `You are a dedicated Super-Resolution AI. Upscale this image by 2x while MAXIMIZING SHARPNESS.
 
 MANDATORY RULES:
-1. MAX SHARPNESS: Eliminate any blur. Enhance edge contrast and crisply define micro-textures (such as denim fabric weave, threads, and paper grain). The output must be mathematically sharper than the original.
-2. STRICT TEXT/LOGO PRESERVATION: Do NOT redraw, alter, or hallucinate lettering. Instead, intensely sharpen the existing pixels of text and logos.
-3. COLOR CONSTANCY: Keep the exact original hues, exposure, and lighting. No color shifting.`;
+1. MAX SHARPNESS: Eliminate blur. Enhance edge contrast, define micro-textures (fabric weave, paper grain).
+2. TEXT/LOGO PRESERVATION: Do NOT redraw lettering. Intensely sharpen existing pixels only.
+3. COLOR CONSTANCY: Keep exact original hues, exposure, and lighting.`;
 
-    let promptText = `${RestorationPrompt}\nDeliver extreme sharpness and high-definition texture fidelity.`;
-
-    const qualityInstructions = {
-      Standard: "",
-      High: "\nApply strong enhancement to edges.",
-      Professional: "\nExecute premium master reconstruction for maximum-sharpness and photorealistic macro-details."
+    const qualityInstructions: Record<string, string> = {
+      Standard: '',
+      High: '\nApply strong enhancement to edges.',
+      Professional: '\nExecute premium master reconstruction for maximum-sharpness and photorealistic macro-details.',
     };
 
-    promptText += "\n" + qualityInstructions[quality];
+    let promptText =
+      `${RestorationPrompt}\nDeliver extreme sharpness and high-definition texture fidelity.` +
+      '\n' + qualityInstructions[quality];
 
     if (enhanceFaces) {
       promptText += `\nFace Restoration: Reconstruct natural skin textures and eye details carefully.`;
     }
 
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`API call timed out after 60 seconds.`)), API_CALL_TIMEOUT_MS)
+      setTimeout(() => reject(new Error('API call timed out after 60 seconds.')), API_CALL_TIMEOUT_MS),
     );
 
+    // PRO usa resolução mais alta que FREE
+    const imageSize = quality === 'Professional' ? '4K' : '2K';
+
     const generateParams: any = {
-      model: modelName,
+      model: IMAGE_MODEL_PRO,
       contents: {
         parts: [
-          { inlineData: { data: base64ImageData, mimeType: mimeType } },
+          { inlineData: { data: base64ImageData, mimeType } },
           { text: promptText },
         ],
       },
+      config: {
+        imageConfig: {
+          aspectRatio,
+          imageSize,
+        },
+      },
     };
 
-    generateParams.config = {
-      imageConfig: {
-        aspectRatio: aspectRatio,
-        imageSize: quality === 'Professional' ? "4K" : "2K"
-      }
-    };
+    console.log(`   ratio: ${aspectRatio} | size: ${imageSize}`);
 
     const response = await Promise.race([
       ai.models.generateContent(generateParams),
-      timeoutPromise
+      timeoutPromise,
     ]);
 
     const candidate = response.candidates?.[0];
     if (!candidate?.content?.parts) {
-      throw new Error("No content parts found in the response.");
+      throw new Error('No content parts found in the response.');
     }
 
     for (const part of candidate.content.parts) {
-      if (part.inlineData && part.inlineData.data && part.inlineData.mimeType) {
+      if (part.inlineData?.data && part.inlineData?.mimeType) {
         console.log('✅ PRO upscale completed');
-        return {
-          data: part.inlineData.data,
-          mimeType: part.inlineData.mimeType
-        };
+        return { data: part.inlineData.data, mimeType: part.inlineData.mimeType };
       }
     }
 
-    throw new Error("The AI model completed the request but did not return any image data.");
+    throw new Error('The AI model completed the request but did not return any image data.');
+
   } catch (error: any) {
-    console.error(`Error calling Gemini API (${tier} tier):`, error);
+    // Bug #6 FIX: guard completo para error.message undefined
+    const msg: string = error?.message || '';
+    console.error(`❌ PRO upscale error:`, msg);
 
-    const errorMessage = error.message || "";
-
-    // Timeout
-    if (errorMessage.includes("timed out")) {
-      throw new Error(`The ${tier} process timed out after 60 seconds. High-resolution upscaling is computationally intensive; try a smaller image or "Standard" quality.`);
+    if (msg.includes('timed out')) {
+      throw new Error('PRO process timed out. Try a smaller image or Standard quality.');
+    }
+    if (
+      msg.includes('API_KEY') ||
+      msg.includes('API key not valid') ||
+      msg.includes('403') ||
+      msg.includes('PERMISSION_DENIED')
+    ) {
+      throw new Error(
+        'Pro Mode requires a valid Paid API Key with active billing. Check your AI Studio settings.',
+      );
+    }
+    if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('quota')) {
+      throw new Error('Quota limit reached. Wait a few minutes or check your billing.');
+    }
+    if (msg.includes('404') || msg.includes('NOT_FOUND')) {
+      throw new Error('Model unavailable in your region or not supported yet.');
+    }
+    if (msg.includes('safety') || msg.includes('SAFETY')) {
+      throw new Error('Image flagged by safety filters. Cannot process this content.');
     }
 
-    // API Key / Billing Issues
-    if (errorMessage.includes("API_KEY") || errorMessage.includes("API key not valid") || errorMessage.includes("403") || errorMessage.includes("PERMISSION_DENIED")) {
-      if (tier === 'Pro') {
-        throw new Error("Pro Mode requires a valid Paid API Key with an active billing account. Please check your AI Studio settings.");
-      }
-      throw new Error("The API key is invalid or lacks necessary permissions for this operation. Verify your configuration in AI Studio.");
-    }
-
-    // Quota / Rate Limiting
-    if (errorMessage.includes("429") || errorMessage.includes("RESOURCE_EXHAUSTED") || errorMessage.includes("quota")) {
-      throw new Error(`Quota limit reached for ${tier} tier. Please wait a few minutes or switch to a paid API key for higher throughput.`);
-    }
-
-    // Model availability / Region issues
-    if (errorMessage.includes("404") || errorMessage.includes("NOT_FOUND")) {
-      throw new Error(`Model is currently unavailable in your region or not supported in this tier.`);
-    }
-
-    // Safety filters
-    if (errorMessage.includes("safety") || errorMessage.includes("SAFETY")) {
-      throw new Error("The image was flagged by safety filters. Gemini cannot process content that may violate safety guidelines.");
-    }
-
-    // Fallback
-    throw new Error(errorMessage || `An unexpected error occurred while processing with Gemini ${tier}. Please try again later.`);
+    throw new Error(msg || `Unexpected error with Gemini PRO. Please try again.`);
   }
 };
