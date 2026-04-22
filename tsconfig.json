@@ -11,16 +11,13 @@
     ],
     "skipLibCheck": true,
     "types": [
-      "node",
-      "react",
-      "react-dom"
+      "node"
     ],
     "moduleResolution": "bundler",
     "isolatedModules": true,
     "moduleDetection": "force",
     "allowJs": true,
     "jsx": "react-jsx",
-    "jsxImportSource": "react",
     "paths": {
       "@/*": [
         "./*"
